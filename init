@@ -1,0 +1,206 @@
+#!/bin/sh
+
+# Exit immediately if a command exits with a non-zero status
+set -e
+
+# Function to parse kernel command-line arguments into variables
+parse_cmdline() {
+    for param in $(cat /proc/cmdline); do
+        case "$param" in
+            *=*)
+                key=${param%%=*}
+                value=${param#*=}
+                case "$key" in
+                    kernel_url)          KERNEL_URL="$value" ;;
+                    initrd_url)          INITRD_URL="$value" ;;
+                    kernel_sha)          KERNEL_SHA="$value" ;;
+                    initrd_sha)          INITRD_SHA="$value" ;;
+                    next_kernel_params)  NEXT_KERNEL_PARAMS="$value" ;;
+                    tpm_attestation)     TPM_ATTESTATION="$value" ;;
+                    attestation_server)  ATTESTATION_SERVER="$value" ;;
+                esac
+                ;;
+        esac
+    done
+}
+
+# Initialize variables with default values
+initialize_defaults() {
+    KERNEL_URL=${KERNEL_URL:-"https://default.example.com/kernel"}
+    INITRD_URL=${INITRD_URL:-"https://default.example.com/initrd.img"}
+    KERNEL_SHA=${KERNEL_SHA:-""}
+    INITRD_SHA=${INITRD_SHA:-""}
+    NEXT_KERNEL_PARAMS=${NEXT_KERNEL_PARAMS:-"console=ttyS0"}
+    TPM_ATTESTATION=${TPM_ATTESTATION:-0}
+    ATTESTATION_SERVER=${ATTESTATION_SERVER:-"https://attestation.server/verify"}
+}
+
+# Mount required filesystems
+mount_filesystems() {
+    mount -t proc none /proc
+    mount -t sysfs none /sys
+    mount -t devtmpfs none /dev
+    mount -t tmpfs tmpfs /run
+}
+
+# Start required daemons
+start_daemons() {
+    mkdir -p /var/run/dbus /tmp
+    echo "Starting D-Bus daemon..."
+    dbus-daemon --system --fork
+
+    echo "Starting tpm2-abrmd..."
+    tpm2-abrmd --allow-root --tcti=device &
+    TPM2_ABRMD_PID=$!
+}
+
+# Stop daemons and clean up
+stop_daemons() {
+    echo "Stopping tpm2-abrmd..."
+    kill "$TPM2_ABRMD_PID" || true
+    if [ -f /var/run/dbus/pid ]; then
+        DBUS_PID=$(cat /var/run/dbus/pid)
+        kill "$DBUS_PID" || true
+    fi
+}
+
+# Unmount filesystems
+unmount_filesystems() {
+    umount /proc || true
+    umount /sys || true
+    umount /dev || true
+    umount /run || true
+}
+
+# Perform TPM attestation
+perform_tpm_attestation() {
+    echo "TPM attestation is enabled."
+
+    # Run TPM initialization script
+    if [ -x /bin/tpm_init.sh ]; then
+        /bin/tpm_init.sh
+    else
+        echo "TPM initialization script not found or not executable."
+        exit 1
+    fi
+
+    # Check for TPM device
+    if [ -e /dev/tpm0 ] || [ -e /dev/tpmrm0 ]; then
+        echo "TPM device found. Performing attestation..."
+
+        # Read PCRs
+        tpm2_pcrread sha256:0,1,2 > /tmp/pcr_values.txt
+
+        # Generate a nonce
+        NONCE=$(head -c 20 /dev/urandom | base64)
+        echo "$NONCE" > /tmp/nonce.txt
+
+        # Create a quote
+        tpm2_quote \
+            --key-context initrd/etc/tpm/attestation_key.ctx \
+            --pcr-list sha256:0,1,2 \
+            --message /tmp/quote_message.dat \
+            --signature /tmp/quote_signature.dat \
+            --qualification /tmp/nonce.txt
+
+        # Send the quote to the attestation server for verification
+        echo "Sending attestation data to server..."
+
+        RESPONSE=$(curl -s -X POST \
+            -F "message=@/tmp/quote_message.dat" \
+            -F "signature=@/tmp/quote_signature.dat" \
+            -F "nonce=$NONCE" \
+            -F "pubkey=@initrd/etc/tpm/attestation_key.pub" \
+            "$ATTESTATION_SERVER")
+
+        if [ "$RESPONSE" = "OK" ]; then
+            echo "TPM attestation successful."
+        else
+            echo "TPM attestation failed. Halting boot."
+            exit 1
+        fi
+    else
+        echo "TPM device not found. Halting boot."
+        exit 1
+    fi
+}
+
+# Set up networking (assumes DHCP)
+setup_networking() {
+    echo "Setting up networking..."
+    busybox udhcpc -i eth0
+}
+
+# Download files using aria2
+download_file() {
+    URL="$1"
+    OUTPUT="$2"
+    echo "Downloading $OUTPUT from $URL..."
+    aria2c --enable-dht --enable-peer-exchange \
+           --bt-seed-unverified=true \
+           --dir=/tmp \
+           --out="$OUTPUT" "$URL"
+}
+
+# Verify file SHA256 hash
+verify_sha256() {
+    FILE="$1"
+    EXPECTED_SHA="$2"
+    echo "Verifying SHA256 for $FILE..."
+    echo "$EXPECTED_SHA  $FILE" | sha256sum -c -
+}
+
+# Main script execution
+main() {
+    parse_cmdline
+    initialize_defaults
+
+    echo "Kernel URL: $KERNEL_URL"
+    echo "Initrd URL: $INITRD_URL"
+    echo "Kernel SHA: $KERNEL_SHA"
+    echo "Initrd SHA: $INITRD_SHA"
+    echo "Next Kernel Params: $NEXT_KERNEL_PARAMS"
+    echo "TPM Attestation: $TPM_ATTESTATION"
+
+    mount_filesystems
+    start_daemons
+
+    # Wait for daemons to be ready
+    sleep 1
+
+    if [ "$TPM_ATTESTATION" = "1" ]; then
+        perform_tpm_attestation
+    else
+        echo "TPM attestation is disabled. Proceeding without attestation."
+    fi
+
+    setup_networking
+
+    # Download kernel and initrd
+    download_file "$KERNEL_URL" "kernel"
+    download_file "$INITRD_URL" "initrd.img"
+
+    # Verify SHA256 hashes if provided
+    if [ -n "$KERNEL_SHA" ]; then
+        verify_sha256 "/tmp/kernel" "$KERNEL_SHA"
+    fi
+
+    if [ -n "$INITRD_SHA" ]; then
+        verify_sha256 "/tmp/initrd.img" "$INITRD_SHA"
+    fi
+
+    echo "SHA256 verification passed for kernel and initrd."
+
+    # Clean up TPM resources
+    tpm2_flushcontext --transient-object
+
+    stop_daemons
+    unmount_filesystems
+
+    # Boot the downloaded kernel and initrd
+    echo "Booting the new kernel..."
+    kexec -l /tmp/kernel --initrd=/tmp/initrd.img --append="$NEXT_KERNEL_PARAMS"
+    kexec -e
+}
+
+main "$@"
