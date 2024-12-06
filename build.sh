@@ -38,6 +38,9 @@ cp /usr/bin/dbus-daemon initrd/usr/bin/
 # Copy tpm2-abrmd daemon
 cp /usr/sbin/tpm2-abrmd initrd/sbin/
 
+# Copy D-Bus system configuration
+cp /etc/dbus-1/system.conf initrd/etc/dbus-1/
+
 # Copy necessary shared libraries for all binaries (copied earlier)
 function copy_libs {
     for bin in "$@"; do
@@ -90,37 +93,9 @@ chmod +x initrd/usr/bin/*
 chmod +x initrd/sbin/*
 chmod +x initrd/bin/tpm_init.sh
 
-# Generate TPM attestation keys
-echo "Generating TPM attestation keys..."
 
 # Create directories for TPM keys
 mkdir -p initrd/etc/tpm
-
-# Create a primary key
-tpm2_createprimary -C o -g sha256 -G rsa -c initrd/etc/tpm/primary.ctx
-if [ $? -ne 0 ]; then
-    echo "Failed to create primary key."
-    exit 1
-fi
-
-# Create an attestation key
-tpm2_create -C initrd/etc/tpm/primary.ctx -g sha256 -G rsa \
-    -u initrd/etc/tpm/attestation_key.pub -r initrd/etc/tpm/attestation_key.priv
-if [ $? -ne 0 ]; then
-    echo "Failed to create attestation key."
-    exit 1
-fi
-
-# Load the attestation key
-tpm2_load -C initrd/etc/tpm/primary.ctx \
-    -u initrd/etc/tpm/attestation_key.pub -r initrd/etc/tpm/attestation_key.priv \
-    -c initrd/etc/tpm/attestation_key.ctx
-if [ $? -ne 0 ]; then
-    echo "Failed to load attestation key."
-    exit 1
-fi
-
-echo "TPM attestation keys successfully generated and stored in initrd/etc/tpm/"
 
 
 # Package initrd

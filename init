@@ -72,6 +72,22 @@ unmount_filesystems() {
     umount /run || true
 }
 
+#Validate Parameters
+validate_params() {
+    if [ -z "$KERNEL_URL" ]; then
+        echo "Error: KERNEL_URL is not set."
+        exit 1
+    fi
+    if [ -z "$INITRD_URL" ]; then
+        echo "Error: INITRD_URL is not set."
+        exit 1
+    fi
+    if [ "$TPM_ATTESTATION" = "1" ] && [ -z "$ATTESTATION_SERVER" ]; then
+        echo "Error: ATTESTATION_SERVER is required for TPM attestation."
+        exit 1
+    fi
+}
+
 # Perform TPM attestation
 perform_tpm_attestation() {
     echo "TPM attestation is enabled."
@@ -97,7 +113,7 @@ perform_tpm_attestation() {
 
         # Create a quote
         tpm2_quote \
-            --key-context initrd/etc/tpm/attestation_key.ctx \
+            --key-context /etc/tpm/attestation_key.ctx \
             --pcr-list sha256:0,1,2 \
             --message /tmp/quote_message.dat \
             --signature /tmp/quote_signature.dat \
@@ -110,7 +126,7 @@ perform_tpm_attestation() {
             -F "message=@/tmp/quote_message.dat" \
             -F "signature=@/tmp/quote_signature.dat" \
             -F "nonce=$NONCE" \
-            -F "pubkey=@initrd/etc/tpm/attestation_key.pub" \
+            -F "pubkey=@/etc/tpm/attestation_key.pub" \
             "$ATTESTATION_SERVER")
 
         if [ "$RESPONSE" = "OK" ]; then
@@ -150,10 +166,21 @@ verify_sha256() {
     echo "$EXPECTED_SHA  $FILE" | sha256sum -c -
 }
 
+cleanup() {
+    echo "Performing cleanup..."
+    stop_daemons
+    unmount_filesystems
+}
+
+
+
 # Main script execution
 main() {
+    trap cleanup EXIT
+    
     parse_cmdline
     initialize_defaults
+    validate_params
 
     echo "Kernel URL: $KERNEL_URL"
     echo "Initrd URL: $INITRD_URL"
