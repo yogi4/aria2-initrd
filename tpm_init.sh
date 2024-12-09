@@ -1,44 +1,71 @@
 #!/bin/sh
+# TPM Initialization and Attestation Script
+# Parses parameters, checks for TPM device, sets up keys, and performs attestation.
 
-#Checks for TPM device: Looks for /dev/tpm0 or /dev/tpmrm0.
-#Generates keys: Creates a primary key and an attestation key.
-#Stores keys: Places key context files in /etc/tpm/.
-#Note: This script assumes that the TPM device files are accessible and that the TPM is not locked.
+set -e
 
-echo "Running TPM initialization script..."
+# Parse kernel command-line arguments into variables
+parse_cmdline() {
+    for param in $(cat /proc/cmdline); do
+        case "$param" in
+            tpm_attestation=*)
+                TPM_ATTESTATION="${param#*=}" ;;
+            attestation_server=*)
+                ATTESTATION_SERVER="${param#*=}" ;;
+        esac
+    done
+}
 
-# Check for TPM device
-if [ -e /dev/tpm0 ] || [ -e /dev/tpmrm0 ]; then
-    echo "TPM detected. Setting up TPM keys..."
+# Main Execution
+parse_cmdline
 
-    mkdir -p /etc/tpm
+if [ "$TPM_ATTESTATION" != "1" ]; then
+    echo "TPM attestation is not enabled. Skipping attestation."
+    exit 0
+fi
 
-    # Create a primary key
-    tpm2_createprimary -C o -g sha256 -G rsa -c /etc/tpm/primary.ctx
-    if [ $? -ne 0 ]; then
-        echo "Failed to create primary key."
-        exit 1
-    fi
+if [ -z "$ATTESTATION_SERVER" ]; then
+    echo "No attestation server provided. Halting."
+    exit 1
+fi
 
-    # Create an attestation key
-    tpm2_create -C /etc/tpm/primary.ctx -g sha256 -G rsa \
-        -u /etc/tpm/attestation_key.pub -r /etc/tpm/attestation_key.priv
-    if [ $? -ne 0 ]; then
-        echo "Failed to create attestation key."
-        exit 1
-    fi
+echo "TPM attestation is enabled. Using server: $ATTESTATION_SERVER"
 
-    # Load the attestation key
-    tpm2_load -C /etc/tpm/primary.ctx \
-        -u /etc/tpm/attestation_key.pub -r /etc/tpm/attestation_key.priv \
-        -c /etc/tpm/attestation_key.ctx
-    if [ $? -ne 0 ]; then
-        echo "Failed to load attestation key."
-        exit 1
-    fi
+# TPM Initialization and Attestation Logic
+tpm2_createprimary -C o -g sha256 -G rsa -c /etc/tpm/primary.ctx
+tpm2_create -C /etc/tpm/primary.ctx -g sha256 -G rsa \
+    -u /etc/tpm/attestation_key.pub -r /etc/tpm/attestation_key.priv
+tpm2_load -C /etc/tpm/primary.ctx \
+    -u /etc/tpm/attestation_key.pub -r /etc/tpm/attestation_key.priv \
+    -c /etc/tpm/attestation_key.ctx
 
-    echo "TPM setup complete."
+# Read PCR values
+tpm2_pcrread sha256:0,1,2 > /tmp/pcr_values.txt
+
+# Generate a nonce
+NONCE=$(head -c 20 /dev/urandom | base64)
+echo "$NONCE" > /tmp/nonce.txt
+
+# Create a quote
+tpm2_quote \
+    --key-context /etc/tpm/attestation_key.ctx \
+    --pcr-list sha256:0,1,2 \
+    --message /tmp/quote_message.dat \
+    --signature /tmp/quote_signature.dat \
+    --qualification /tmp/nonce.txt
+
+# Send attestation data to the server
+RESPONSE=$(curl -s -X POST \
+    -F "message=@/tmp/quote_message.dat" \
+    -F "signature=@/tmp/quote_signature.dat" \
+    -F "nonce=$NONCE" \
+    -F "pubkey=@/etc/tpm/attestation_key.pub" \
+    -F "pcr_values=@/tmp/pcr_values.txt" \
+    "$ATTESTATION_SERVER")
+
+if [ "$RESPONSE" = "OK" ]; then
+    echo "TPM attestation successful."
 else
-    echo "No TPM device found. Skipping TPM setup."
+    echo "TPM attestation failed. Halting system."
     exit 1
 fi
