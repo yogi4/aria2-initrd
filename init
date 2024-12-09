@@ -88,59 +88,6 @@ validate_params() {
     fi
 }
 
-# Perform TPM attestation
-perform_tpm_attestation() {
-    echo "TPM attestation is enabled."
-
-    # Run TPM initialization script
-    if [ -x /bin/tpm_init.sh ]; then
-        /bin/tpm_init.sh
-    else
-        echo "TPM initialization script not found or not executable."
-        exit 1
-    fi
-
-    # Check for TPM device
-    if [ -e /dev/tpm0 ] || [ -e /dev/tpmrm0 ]; then
-        echo "TPM device found. Performing attestation..."
-
-        # Read PCRs
-        tpm2_pcrread sha256:0,1,2 > /tmp/pcr_values.txt
-
-        # Generate a nonce
-        NONCE=$(head -c 20 /dev/urandom | base64)
-        echo "$NONCE" > /tmp/nonce.txt
-
-        # Create a quote
-        tpm2_quote \
-            --key-context /etc/tpm/attestation_key.ctx \
-            --pcr-list sha256:0,1,2 \
-            --message /tmp/quote_message.dat \
-            --signature /tmp/quote_signature.dat \
-            --qualification /tmp/nonce.txt
-
-        # Send the quote to the attestation server for verification
-        echo "Sending attestation data to server..."
-
-        RESPONSE=$(curl -s -X POST \
-            -F "message=@/tmp/quote_message.dat" \
-            -F "signature=@/tmp/quote_signature.dat" \
-            -F "nonce=$NONCE" \
-            -F "pubkey=@/etc/tpm/attestation_key.pub" \
-            "$ATTESTATION_SERVER")
-
-        if [ "$RESPONSE" = "OK" ]; then
-            echo "TPM attestation successful."
-        else
-            echo "TPM attestation failed. Halting boot."
-            exit 1
-        fi
-    else
-        echo "TPM device not found. Halting boot."
-        exit 1
-    fi
-}
-
 # Set up networking (assumes DHCP)
 setup_networking() {
     echo "Setting up networking..."
@@ -195,8 +142,14 @@ main() {
     # Wait for daemons to be ready
     sleep 1
 
+    # Perform TPM attestation if enabled
     if [ "$TPM_ATTESTATION" = "1" ]; then
-        perform_tpm_attestation
+        if [ -x /bin/tpm_init.sh ]; then
+            /bin/tpm_init.sh
+        else
+            echo "Error: TPM initialization script not found or not executable."
+            exit 1
+        fi
     else
         echo "TPM attestation is disabled. Proceeding without attestation."
     fi
