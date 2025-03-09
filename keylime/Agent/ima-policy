@@ -1,0 +1,63 @@
+# --------------------
+# Example /etc/ima/ima-policy
+# --------------------
+
+# -------------------------------------------------
+# 1) DONT_MEASURE sections for ephemeral/virtual FS
+#    (these are “don’t measure” lines to keep logs sane)
+# -------------------------------------------------
+
+# PROC_SUPER_MAGIC = 0x9fa0
+dont_measure fsmagic=0x9fa0
+# SYSFS_MAGIC = 0x62656572
+dont_measure fsmagic=0x62656572
+# DEBUGFS_MAGIC = 0x64626720
+dont_measure fsmagic=0x64626720
+# TMPFS_MAGIC = 0x01021994
+dont_measure fsmagic=0x1021994
+# RAMFS_MAGIC = 0x858458f6
+dont_measure fsmagic=0x858458f6
+# DEVPTS_SUPER_MAGIC=0x1cd1
+dont_measure fsmagic=0x1cd1
+# BINFMTFS_MAGIC=0x42494e4d
+dont_measure fsmagic=0x42494e4d
+# SECURITYFS_MAGIC=0x73636673
+dont_measure fsmagic=0x73636673
+# SELINUX_MAGIC=0xf97cff8c
+dont_measure fsmagic=0xf97cff8c
+# SMACK_MAGIC=0x43415d53
+dont_measure fsmagic=0x43415d53
+# NSFS_MAGIC=0x6e736673
+dont_measure fsmagic=0x6e736673
+# EFIVARFS_MAGIC=0xde5e81e4
+dont_measure fsmagic=0xde5e81e4
+# CGROUP_SUPER_MAGIC=0x27e0eb
+dont_measure fsmagic=0x27e0eb
+# CGROUP2_SUPER_MAGIC=0x63677270
+dont_measure fsmagic=0x63677270
+# OVERLAYFS_MAGIC=0x794c7630
+dont_measure fsmagic=0x794c7630
+
+# -------------------------------------------------
+# 2) MEASURE sections for critical execution paths
+#    (BPRM_CHECK measures binaries, FILE_MMAP with exec,
+#     MODULE_CHECK for kernel modules, etc.)
+# -------------------------------------------------
+
+# Measure any binary that is executed via the Linux binfmt (e.g. ELF, scripts).
+measure func=BPRM_CHECK
+
+# Measure any file mapped with execute permissions.
+measure func=FILE_MMAP mask=MAY_EXEC
+
+# Measure kernel modules that get loaded.
+# You can specify "uid=0" if you only want to measure modules loaded by root,
+# or omit it to measure any loaded module.
+measure func=MODULE_CHECK uid=0
+
+# (Optional) Measure attempts to load a new kernel via kexec.
+# This can be relevant if your Pi uses kexec at runtime to load a new kernel.
+# measure func=KEXEC_KERNEL_CHECK
+
+# (Optional) Measure command line passed to kexec
+# measure func=KEXEC_CMDLINE
