@@ -57,26 +57,49 @@ function copy_libs {
 # the agent. This can be quite large, so consider a more minimal approach for production.
 
 # Helper function to copy libraries needed by a binary or library
+#function copy_libs {
+#    for bin in "$@"; do
+#        if [ -x "$bin" ]; then
+#            echo "Copying libs for $bin"
+#            # Grab all linked .so
+#            ldd "$bin" | grep "=>" | awk '{print $3}' | grep -v 'ld-linux' | while read -r lib; do
+#                if [ -f "$lib" ]; then
+#                    mkdir -p initrd"/$(dirname "$lib")"
+#                    cp -v "$lib" initrd"/$lib"
+#                fi
+#            done
+#            # Also copy the loader if needed
+#            loader=$(ldd "$bin" | grep 'ld-linux' | awk '{print $1}')
+#            if [ -f "$loader" ]; then
+#                mkdir -p initrd"/$(dirname "$loader")"
+#                cp -v "$loader" initrd"/$loader"
+#            fi
+#        fi
+#    done
+#}
+
+
 function copy_libs {
     for bin in "$@"; do
         if [ -x "$bin" ]; then
             echo "Copying libs for $bin"
-            # Grab all linked .so
-            ldd "$bin" | grep "=>" | awk '{print $3}' | grep -v 'ld-linux' | while read -r lib; do
+            # Copy linked libraries and loader
+            ldd "$bin" | grep -E '=>' | awk '{print $3}' | grep -v '^(' | while read -r lib; do
                 if [ -f "$lib" ]; then
-                    mkdir -p initrd/"$(dirname "$lib")"
-                    cp -v "$lib" initrd/"$lib"
+                    cp -v --parents "$lib" initrd/
                 fi
             done
-            # Also copy the loader if needed
+            # Explicitly copy loader if present
             loader=$(ldd "$bin" | grep 'ld-linux' | awk '{print $1}')
             if [ -f "$loader" ]; then
-                mkdir -p initrd/"$(dirname "$loader")"
-                cp -v "$loader" initrd/"$loader"
+                cp -v --parents "$loader" initrd/
             fi
         fi
     done
 }
+
+
+
 # We need the python3 binary plus the Keylime scripts
 PYTHON_BIN=$(which python3)
 KEYLIME_BINAGENT=$(which keylime_agent)
